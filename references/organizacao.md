@@ -27,7 +27,8 @@ Um acontecimento costuma ter de 1 a ~8 camadas. Se ficar enorme (a cena inteira)
 **Na lib:**
 - `AE.events(["Abertura", "Clique botao", "Cards", ...])` logo no início, **em ordem de tempo**. Assim vizinhos nunca repetem cor (rotação de 12 cores contrastantes).
 - `evt: "Cards"` em cada camada. Mattes herdam a cor da camada que recortam. Precomps: `layer.label = AE.evt("...")`.
-- Cores reservadas, fora da rotação: controladores (Vermelho), fundo (Arenito, `role: "bg"`), áudio/locução (Verde) e guia (Marrom).
+- Cores reservadas, fora da rotação: `CTRL_GERAL` (Vermelho), fundo (Arenito, `role: "bg"`), áudio/locução (Verde) e guia (Marrom).
+- Controlador de grupo: cor **parecida, mas não igual** à do grupo (ex.: grupo Amarelo → controlador Laranja; Azul → Ciano), definida por `evt` em `AE.ctrl` ou, sem `evt`, pela primeira camada ligada.
 - Não renomeie as labels nas preferências do After: o usuário pediu para manter os nomes dele.
 
 ## 2. Corte das camadas
@@ -61,15 +62,23 @@ O objetivo: quando há muitas coisas agrupadas, animadas e se relacionando, o us
 **Quando perguntar:** só quando não estiver claro se um conjunto é um grupo que deve ser controlado (ex.: elementos próximos no tempo, mas sem relação no código). Pergunte numa linha, com a sua sugestão.
 
 **Na lib:**
-- `var c = AE.ctrl(comp, {name: "Cards", x, y, atraso: 0.15, cor: "#FFD400"})` cria `CTRL_Cards` no pivô do grupo (centro do conjunto ou origem do pai no código).
-- `AE.bind(camada, c, {index: i})` em cada membro (o `index` é a posição no stagger).
+- `var c = AE.ctrl(comp, {name: "Cards", x, y, evt: "Cards", atraso: 0.15, cor: "#FFD400"})` cria `CTRL_Cards` no pivô do grupo (centro do conjunto ou origem do pai no código).
+- `AE.bind(camada, c, {index: i})` em cada membro (o `index` é a posição no stagger). O controlador vai sozinho para **logo acima da camada mais alta do grupo** (ou do matte dela).
 - Efeitos do controlador:
   - mover, escalar e girar o null move o grupo;
   - **Intensidade** escala o movimento em torno da pose de repouso;
   - **Atraso** muda o espaçamento do stagger;
   - **Opacidade** e **Ligado** controlam a visibilidade;
   - **Cor** pinta os preenchimentos que tinham aquela cor.
-- `var g = AE.ctrlGeral(comp, {cores: {"Primaria": "#2A2AFF", "Destaque": "#FFD400"}})` e, no fim, `AE.linkGeral(cadaComp, g, compPrincipal)`. As camadas soltas viram filhas do GERAL (fundo, guia e áudio ficam de fora), e as cores iguais às da marca passam a vir dele, inclusive dentro das precomps.
+- `var g = AE.ctrlGeral(comp, {comps: [todas as comps], cores: {"Primaria": "#2A2AFF"}})` depois das camadas e dos controladores de grupo; e então `AE.linkGeral(cadaComp, g, compPrincipal)`.
+  - O GERAL recebe **todas as cores fixas do projeto**: preenchimentos e traços de formas, cores de efeitos (ex.: Gradient Ramp), preenchimento e contorno de textos, e a `Cor` dos controladores de grupo. Cada uma vira um controle de cor, da mais usada para a menos usada.
+  - Nome automático: o tom + onde aparece, ex. "Azul (Botao, Selo)", "Branco (Titulo, Cursor +3)". Os nomes passados em `cores` (os da marca no código) substituem o automático.
+  - Ficam de fora: cores animadas, mattes, guia e estilos de camada ou materiais 3D escondidos.
+  - Textos são ligados por expressão de estilo (`setFillColor`/`setStrokeColor`): o texto continua editável.
+  - A `Cor` de um controlador de grupo passa a vir do GERAL. Para o grupo ter cor própria, apague a expressão dela.
+  - As camadas soltas viram filhas do GERAL (fundo, guia e áudio ficam de fora), inclusive com as cores ligadas dentro das precomps.
+  - Fundo: `AE.solid({role: "bg"})` cria uma forma do tamanho da comp (e não um sólido), para a cor ficar controlável.
+- **Marcador "Ex" em todo controlador:** `AE.finish` põe no início de cada controlador um marcador com 2 linhas: "Ex" e um resumo do que ele controla (camadas, Transformar, Intensidade, Atraso, Opacidade/Ligado, Cor e se está exposto). Não escreva isso à mão.
 - **Regra de ouro:** com os controles no padrão, a animação é idêntica ao original. Confira com `prop.valueAtTime(t, false)` igual a `valueAtTime(t, true)`.
 - Se o usuário aumentar muito o Atraso, a última camada do grupo pode precisar de mais tempo na timeline. Avise isso no relatório quando houver controlador com Atraso.
 
@@ -92,7 +101,8 @@ O objetivo: quando há muitas coisas agrupadas, animadas e se relacionando, o us
   - Tempos, nesta ordem de preferência: legendas ou timings do projeto, depois `node scripts/frases_locucao.mjs locucao.wav roteiro.txt`.
   - O script usa as maiores pausas como fronteiras entre as frases do roteiro e arredonda para baixo no frame. Se houver mais ou menos trechos que frases, ele avisa: ajuste `--pausa` ou `--ruido`.
   - No Modo Vídeo, com a fala dentro do próprio vídeo, use `AE.phraseMarkers(camadaDoVideo, frases)`.
-- **Marcador em camada:** só em caso muito específico (ex.: um sync pontual que o usuário precisa achar).
+- **Controladores:** o marcador "Ex" automático de cada controlador (§3).
+- **Marcador em outras camadas:** só em caso muito específico (ex.: um sync pontual que o usuário precisa achar).
 
 ## 6. Nomes, guia, shy e limpeza
 

@@ -62,7 +62,7 @@ Leia `references/mapeamento.md` sempre que for converter unidades, um ease incom
 ### Regras de organização (resumo de `references/organizacao.md`)
 - **Camadas só onde aparecem:** `AE.autoTrim(comp)` em cada comp. Aparições separadas por mais de 1 s viram camadas separadas, exceto persistentes (`persist: true`), fundo, camadas com expressão, ligadas a controlador ou com matte.
 - **Cor por acontecimento:** `AE.events([...])` em ordem de tempo e `evt: "..."` em cada camada. Cores fixas para controladores, fundo, áudio e guia.
-- **Controladores:** decida sozinho pelos critérios de `organizacao.md` §3 e pergunte só quando não ficar claro se um conjunto é um grupo. Sempre um `CTRL_GERAL`. Com os controles no padrão, a animação é idêntica ao original.
+- **Controladores:** decida sozinho pelos critérios de `organizacao.md` §3 e pergunte só quando não ficar claro se um conjunto é um grupo. Cada controlador de grupo fica logo acima do grupo, com cor parecida (não igual) à dele. Sempre um `CTRL_GERAL` com **todas** as cores do projeto. Todo controlador ganha o marcador "Ex" com o resumo do que controla. Com os controles no padrão, a animação é idêntica ao original.
 - **Precomp** só quando o grupo pede (matte do conjunto, repetição, excesso de camadas, cena) e nunca quando ele se relaciona com camadas de fora.
 - **Marcadores:** cenas na comp; frases na camada da locução; em outras camadas só em caso muito específico.
 - **Guia, shy e limpeza:** render original como guia travada, mattes em shy, limpeza só do que o script criou.
@@ -102,13 +102,13 @@ Leia `references/mapeamento.md` sempre que for converter unidades, um ease incom
         AE.autoTrim(comp);
 
         // 4) controladores
-        var cc = AE.ctrl(comp, { name: "Cards", x: 960, y: 540, atraso: 0.15 });
+        var cc = AE.ctrl(comp, { name: "Cards", x: 960, y: 540, evt: "Cards", atraso: 0.15 });
         for (var i = 0; i < cards.length; i++) AE.bind(cards[i], cc, { index: i });
-        var geral = AE.ctrlGeral(comp, { cores: { "Primaria": "#2A2AFF" } });
+        var geral = AE.ctrlGeral(comp, { comps: [comp], cores: { "Primaria": "#2A2AFF" } }); // todas as cores
         AE.linkGeral(comp, geral, comp);
         AE.exposeText(titulo, comp);
 
-        // 5) fim
+        // 5) fim (limpeza, shy, guias travadas e marcador "Ex" em cada controlador)
         AE.finish(root, [comp]);
         comp.openInViewer();
         AE.report("NOME");
@@ -129,7 +129,7 @@ API da lib (detalhes nos comentários de `aelib.jsx`):
 - **Controladores:** `AE.ctrl`, `AE.bind`, `AE.ctrlGeral`, `AE.linkGeral`, `AE.expose`, `AE.exposeText`, `AE.exposeCtrl`.
 - **Ordem obrigatória:** camadas → guia/locução → `autoTrim` (em cada comp) → controladores e `linkGeral` → `finish`. O corte antes dos controladores garante a pose de repouso certa e a poda de keys.
 
-Antes de usar algo que não existe na lib, prefira compor com o que existe. Se precisar mesmo escrever ExtendScript direto, siga ES3 (só `var`, `function`, laços `for`), use matchNames e, depois de `addProperty`, busque as propriedades de novo (as referências antigas ficam inválidas).
+Antes de usar algo que não existe na lib, prefira compor com o que existe. Se precisar mesmo escrever ExtendScript direto, siga ES3 (só `var`, `function`, laços `for`), use matchNames e, depois de `addProperty`, busque as propriedades de novo (as referências antigas ficam inválidas). Não encadeie ternários (`a ? b : c ? d : e`): o ExtendScript avalia errado. Use `if/else`.
 
 ## 5. Checar e entregar
 

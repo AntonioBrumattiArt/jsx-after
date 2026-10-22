@@ -55,6 +55,7 @@ const rules = [
 lines.forEach((ln, idx) => {
   for (const [re, msg] of rules) if (re.test(ln)) errors.push(`linha ${idx + 1}: ${msg}`);
   if (/\.indexOf\s*\(/.test(ln)) warns.push(`linha ${idx + 1}: indexOf so existe em string no ES3; confira que nao e array`);
+  if (/\?[^:;(),]*:[^;(),]*\?[^:;(),]*:/.test(ln)) errors.push(`linha ${idx + 1}: ternario encadeado sem parenteses; o ExtendScript avalia errado: use if/else ou parenteses`);
 });
 
 // 3) Estrutura esperada

@@ -66,7 +66,9 @@ AE.marker = function (comp, t, label, evt) {
 // Cada acontecimento (cena, clique, entrada de um grupo...) ganha uma cor de label.
 // Registre os acontecimentos em ordem de tempo com AE.events([...]): vizinhos nunca repetem cor.
 // Cores reservadas (fora da rotacao): controladores, fundo, audio/locucao e guia.
-AE.LABEL = { ctrl: 1, bg: 15, audio: 9, guia: 12 };  // Vermelho, Arenito, Verde, Marrom
+AE.LABEL = { ctrl: 1, bg: 15, audio: 9, guia: 12 };  // Vermelho (CTRL_GERAL), Arenito, Verde, Marrom
+// Cor "parecida, mas nao igual" para o controlador de um grupo (label do grupo -> label do controlador).
+AE.SIMILAR = { 1: 4, 2: 11, 3: 14, 4: 13, 5: 10, 6: 11, 7: 16, 8: 14, 9: 16, 10: 5, 11: 6, 12: 15, 13: 4, 14: 3, 15: 12, 16: 7 };
 AE.EVT_ROT = [2, 8, 6, 3, 13, 7, 11, 5, 14, 4, 10, 16]; // ordem com bom contraste entre vizinhos
 AE._evts = {};
 AE._evtN = 0;
@@ -209,7 +211,12 @@ AE.path = function (comp, o) {
 };
 
 // Solido. o = {name, color, x, y, w, h, origin}
+// Com role "bg" vira um retangulo de forma do tamanho da comp: a cor fica controlavel pelo CTRL_GERAL.
 AE.solid = function (comp, o) {
+    if (o.role === "bg") {
+        return AE.rect(comp, { name: o.name || "Fundo", x: o.x || 0, y: o.y || 0, w: o.w || comp.width, h: o.h || comp.height,
+            fill: o.color || "#000000", role: "bg", evt: o.evt, inT: o.inT, outT: o.outT, keep: o.keep });
+    }
     var l = comp.layers.addSolid(AE.hex(o.color || "#000000"), o.name || "Solido", o.w || comp.width, o.h || comp.height, 1);
     if (o.x != null) AE._box(l, o, o.w, o.h);
     return AE.place(l, o);
@@ -637,13 +644,15 @@ AE._fxCtrl = function (l, mn, name, v) {
     if (v != null) l.property("ADBE Effect Parade").property(name).property(1).setValue(v);
 };
 
-// Controlador de grupo (estilo Duik, nativo). o = {name, x, y (pivo do grupo),
+// Controlador de grupo (estilo Duik, nativo). o = {name, x, y (pivo do grupo), evt (acontecimento do grupo),
 //   atraso (stagger original em s, so se o grupo tem stagger), cor ("#hex", so se o grupo tem cor unica)}
 // Cria CTRL_<name>: mover/escalar/girar o null move o grupo; efeitos Intensidade, Opacidade, Ligado (+ Atraso, Cor).
+// Fica logo acima da camada mais alta do grupo, com uma cor parecida (mas nao igual) a do grupo.
 AE.ctrl = function (comp, o) {
     var l = comp.layers.addNull();
     l.name = AE._prefix(o.name, "ctrl");
-    l.label = AE.LABEL.ctrl;
+    l.label = o.evt ? AE.SIMILAR[AE.evt(o.evt)] : AE.LABEL.ctrl;
+    if (o.evt) AE._meta(l, "labeled", 1);
     AE._meta(l, "role", "ctrl");
     l.transform.position.setValue([o.x != null ? o.x : comp.width / 2, o.y != null ? o.y : comp.height / 2]);
     if (o.atraso != null) { AE._fxCtrl(l, "ADBE Slider Control", "Atraso", o.atraso); AE._meta(l, "atraso0", o.atraso); }
@@ -662,6 +671,9 @@ AE.bind = function (layer, ctrl, o) {
     if (!layer.parent) layer.parent = ctrl;
     var mtl = AE._matteOf(layer.containingComp, layer);
     if (mtl && !mtl.parent) mtl.parent = ctrl; // o matte acompanha a camada
+    var top = (mtl && mtl.index < layer.index) ? mtl : layer; // controlador logo acima do grupo
+    if (ctrl.index > top.index) ctrl.moveBefore(top);
+    if (!AE._meta(ctrl, "labeled")) { ctrl.label = AE.SIMILAR[layer.label] || AE.LABEL.ctrl; AE._meta(ctrl, "labeled", 1); }
     var ref = 'thisComp.layer("' + ctrl.name + '")';
     var a0 = AE._meta(ctrl, "atraso0"), idx = o.index || 0;
     var head = "var c = " + ref + ";\nvar k = c.effect(\"Intensidade\")(1) / 100;\n" +
@@ -692,29 +704,112 @@ AE.bind = function (layer, ctrl, o) {
 // Liga preenchimentos/tracos (formas) e cores de efeitos iguais a 'rgb' a uma expressao de cor.
 AE._linkColor = function (layer, rgb, expr) {
     var n = 0;
-    AE._eachProp(layer, function (p) {
-        try {
-            if (p.propertyValueType !== PropertyValueType.COLOR || p.numKeys > 0 || p.expression !== "") return;
-            if (AE._same(p.value, rgb)) { p.expression = expr; n++; }
-        } catch (e) {}
-    });
+    AE._eachColor(layer, function (p) { if (AE._same(p.value, rgb)) { p.expression = expr; n++; } });
     return n;
 };
 
-// CTRL_GERAL: controla a peca toda. o = {cores: {"Primaria": "#2A2AFF", ...}}
+// ---- paleta do projeto
+AE._hexOf = function (rgb) {
+    var s = "#", i;
+    for (i = 0; i < 3; i++) { var h = Math.round(AE._clamp(rgb[i], 0, 1) * 255).toString(16).toUpperCase(); s += h.length < 2 ? "0" + h : h; }
+    return s;
+};
+AE._colorName = function (rgb) {
+    var r = rgb[0], g = rgb[1], b = rgb[2], mx = Math.max(r, g, b), mn = Math.min(r, g, b), li = (mx + mn) / 2, d = mx - mn, h;
+    if (d < 0.08) return li > 0.85 ? "Branco" : (li < 0.15 ? "Preto" : "Cinza");
+    if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+    // if/else de proposito: o ExtendScript erra ternarios encadeados (a ? b : c ? d : e)
+    var n;
+    if (h < 15 || h >= 345) n = "Vermelho";
+    else if (h < 40) n = "Laranja";
+    else if (h < 65) n = "Amarelo";
+    else if (h < 160) n = "Verde";
+    else if (h < 195) n = "Ciano";
+    else if (h < 255) n = "Azul";
+    else if (h < 290) n = "Roxo";
+    else n = "Rosa";
+    if (li < 0.25) return n + " escuro";
+    if (li > 0.8) return n + " claro";
+    return n;
+};
+// So as cores visiveis do projeto: conteudo das formas e efeitos. Ignora os estilos de camada e
+// os materiais 3D das formas (cores de extrusao escondidas, vermelhas por padrao).
+AE._eachColor = function (l, fn) {
+    var walk = function (g) {
+        for (var i = 1; i <= g.numProperties; i++) {
+            var p;
+            try { p = g.property(i); } catch (e) { continue; }
+            if (!p) continue;
+            if (p.propertyType !== PropertyType.PROPERTY) { if (!/Materials/.test(p.matchName)) walk(p); continue; }
+            try { if (p.propertyValueType === PropertyValueType.COLOR && p.numKeys === 0 && p.expression === "") fn(p); } catch (e2) {}
+        }
+    };
+    var gs = ["ADBE Root Vectors Group", "ADBE Effect Parade"], i, g;
+    for (i = 0; i < gs.length; i++) {
+        try { g = l.property(gs[i]); } catch (e) { g = null; }
+        if (g) walk(g);
+    }
+};
+AE._textDoc = function (l) {
+    var tp = l.property("ADBE Text Properties");
+    return tp ? tp.property("ADBE Text Document") : null;
+};
+// Todas as cores fixas usadas nas comps (formas, tracos, efeitos, controles de grupo e textos),
+// da mais usada para a menos usada. Ignora guia, mattes, CTRL_GERAL e cores animadas.
+AE._palette = function (comps) {
+    var map = {}, order = [], i, j, k;
+    var add = function (rgb, who) {
+        var key = AE._hexOf(rgb);
+        if (!map[key]) { map[key] = { rgb: [rgb[0], rgb[1], rgb[2]], users: [], n: 0 }; order.push(key); }
+        map[key].n++;
+        for (k = 0; k < map[key].users.length; k++) if (map[key].users[k] === who) return;
+        map[key].users.push(who);
+    };
+    for (i = 0; i < comps.length; i++) for (j = 1; j <= comps[i].numLayers; j++) {
+        var l = comps[i].layer(j), role = AE._meta(l, "role");
+        if (role === "guia" || role === "matte" || l.isTrackMatte || l.name === "CTRL_GERAL") continue;
+        var who = l.name.replace("CTRL_", "").replace("BG_", "").replace(/ #\d+$/, "");
+        AE._eachColor(l, function (p) { add(p.value, who); });
+        var td = AE._textDoc(l);
+        if (td && td.expression === "" && td.numKeys === 0) {
+            var d = td.value;
+            if (d.applyFill) add(d.fillColor, who);
+            if (d.applyStroke) add(d.strokeColor, who);
+        }
+    }
+    order.sort(function (a, b) { return map[b].n - map[a].n; });
+    var out = [];
+    for (i = 0; i < order.length; i++) out.push({ hex: order[i], rgb: map[order[i]].rgb, users: map[order[i]].users });
+    return out;
+};
+
+// CTRL_GERAL: controla a peca toda e tem TODAS as cores do projeto, uma por controle de cor,
+// nomeadas pelo tom e por onde aparecem ("Azul (Botao, Selo)"). o = {comps: [todas as comps],
+// cores: {"Primaria": "#2A2AFF"}} (opcional: nomes da marca no codigo, que substituem o nome automatico).
+// Crie depois das camadas e dos controladores de grupo; depois chame AE.linkGeral em cada comp.
 AE.ctrlGeral = function (comp, o) {
     o = o || {};
-    var l = comp.layers.addNull();
+    var l = comp.layers.addNull(), i, k;
     l.name = "CTRL_GERAL";
     l.label = AE.LABEL.ctrl;
     AE._meta(l, "role", "ctrl");
     l.transform.position.setValue([comp.width / 2, comp.height / 2]);
+    var named = {};
+    if (o.cores) for (k in o.cores) if (o.cores.hasOwnProperty(k)) named[AE._hexOf(AE.hex(o.cores[k]))] = k;
+    var pal = AE._palette(o.comps || [comp]), used = {};
     AE._brand = [];
-    if (o.cores) for (var k in o.cores) {
-        if (!o.cores.hasOwnProperty(k)) continue;
-        AE._fxCtrl(l, "ADBE Color Control", k, AE.col(o.cores[k]));
-        AE._brand.push({ name: k, rgb: AE.hex(o.cores[k]) });
+    for (i = 0; i < pal.length; i++) {
+        var nm = named[pal[i].hex];
+        if (!nm) {
+            var us = pal[i].users.slice(0, 2).join(", ") + (pal[i].users.length > 2 ? " +" + (pal[i].users.length - 2) : "");
+            nm = AE._colorName(pal[i].rgb) + " (" + us + ")";
+        }
+        if (used[nm]) { used[nm]++; nm += " " + used[nm]; } else used[nm] = 1;
+        AE._fxCtrl(l, "ADBE Color Control", nm, AE.col(pal[i].rgb));
+        AE._brand.push({ name: nm, rgb: pal[i].rgb });
     }
+    l.moveToBeginning();
     return l;
 };
 // Liga as cores da marca ao CTRL_GERAL e, na comp dele, torna as camadas soltas filhas dele
@@ -728,7 +823,21 @@ AE.linkGeral = function (comp, geral, mainComp) {
         if (same && l.index !== geral.index && !l.parent && role !== "bg" && role !== "guia" && role !== "audio" && !l.isTrackMatte) {
             if (!(role === "ctrl" && l.name === "CTRL_GERAL")) l.parent = geral;
         }
-        for (j = 0; j < (AE._brand || []).length; j++) AE._linkColor(l, AE._brand[j].rgb, ref + '.effect("' + AE._brand[j].name + '")(1)');
+        if (l.name === "CTRL_GERAL" || role === "guia" || role === "matte" || l.isTrackMatte) continue;
+        var fill = null, stroke = null, td = AE._textDoc(l);
+        var dv = (td && td.expression === "" && td.numKeys === 0) ? td.value : null;
+        for (j = 0; j < (AE._brand || []).length; j++) {
+            var eref = ref + '.effect("' + AE._brand[j].name + '")(1)';
+            AE._linkColor(l, AE._brand[j].rgb, eref);
+            if (dv && dv.applyFill && AE._same(dv.fillColor, AE._brand[j].rgb)) fill = eref;
+            if (dv && dv.applyStroke && AE._same(dv.strokeColor, AE._brand[j].rgb)) stroke = eref;
+        }
+        if (fill || stroke) { // cor do texto via expressao de estilo (mantem o texto e a edicao)
+            var ex = "var s = text.sourceText.style;\n";
+            if (fill) ex += "var f = " + fill + ";\ns = s.setFillColor([f[0], f[1], f[2]]);\n";
+            if (stroke) ex += "var k = " + stroke + ";\ns = s.setStrokeColor([k[0], k[1], k[2]]);\n";
+            td.expression = ex + "s;";
+        }
     }
     for (i = 1; i <= comp.numLayers; i++) { // mattes acompanham o pai da camada que recortam
         var m = comp.layer(i), of = AE._meta(m, "matteOf");
@@ -753,6 +862,35 @@ AE.exposeText = function (textLayer, comp, name) {
 AE.exposeCtrl = function (ctrl, comp) {
     var fx = ctrl.property("ADBE Effect Parade"), base = ctrl.name.replace("CTRL_", "");
     for (var i = 1; i <= fx.numProperties; i++) AE.expose(fx.property(i).property(1), comp, base + " " + fx.property(i).name);
+    AE._meta(ctrl, "exposed", 1);
+};
+
+// ---------------------------------------------------------------- notas dos controladores
+// Marcador no inicio de cada controlador: 1a linha "Ex", 2a linha o resumo do que ele controla.
+AE._names = function (arr) {
+    if (arr.length <= 4) return arr.join(", ");
+    return arr.slice(0, 3).join(", ") + " +" + (arr.length - 3);
+};
+AE._ctrlNote = function (comp, c) {
+    var D = " \u00b7 ", fx = c.property("ADBE Effect Parade"), i, s;
+    if (c.name === "CTRL_GERAL") {
+        s = "Pe\u00e7a toda" + D + "Transformar: move/escala tudo (menos fundo, guia e \u00e1udio)" + D +
+            fx.numProperties + " cores do projeto, nomeadas pelo tom e por onde aparecem";
+    } else {
+        var mem = [];
+        for (i = 1; i <= comp.numLayers; i++) if (AE._meta(comp.layer(i), "bound") === c.name) mem.push(comp.layer(i).name);
+        mem.reverse(); // de baixo para cima = ordem de criacao
+        s = AE._names(mem) + D + "Transformar: o grupo" + D + "Intensidade: for\u00e7a do movimento";
+        var get = function (n) { for (var q = 1; q <= fx.numProperties; q++) if (fx.property(q).name === n) return fx.property(q); return null; };
+        if (get("Atraso")) s += D + "Atraso: intervalo do stagger (" + AE._meta(c, "atraso0") + " s)";
+        s += D + "Opacidade/Ligado: visibilidade";
+        var cor = get("Cor");
+        if (cor) s += D + "Cor: preenchimento" + (cor.property(1).expression !== "" ? " (vem do CTRL_GERAL; apague a express\u00e3o para cor pr\u00f3pria)" : "");
+        if (AE._meta(c, "exposed")) s += D + "Exposto nas Essential Properties";
+    }
+    var m = new MarkerValue("Ex\r" + s);
+    try { m.label = c.label; } catch (e) {}
+    c.property("ADBE Marker").setValueAtTime(c.inPoint, m);
 };
 
 // ---------------------------------------------------------------- guia e locucao
@@ -937,7 +1075,11 @@ AE.finish = function (root, comps) {
     for (i = 0; i < comps.length; i++) {
         comps[i].hideShyLayers = true;
         nl += comps[i].numLayers;
-        for (j = 1; j <= comps[i].numLayers; j++) if (AE._meta(comps[i].layer(j), "role") === "ctrl") nc++;
+        for (j = 1; j <= comps[i].numLayers; j++) {
+            if (AE._meta(comps[i].layer(j), "role") !== "ctrl") continue;
+            nc++;
+            AE._ctrlNote(comps[i], comps[i].layer(j));
+        }
     }
     for (i = 0; i < AE._lockAtEnd.length; i++) AE._lockAtEnd[i].locked = true;
     AE._summary = "Camadas: " + nl + " | cortadas: " + AE._stats.cuts + " | divididas: " + AE._stats.splits +
