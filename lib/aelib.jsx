@@ -46,6 +46,7 @@ AE.comp = function (o) {
 AE.importFile = function (rel, folder) {
     var f = new File(AE.base + "/" + rel);
     if (!f.exists) {
+        if (f.fsName.length >= 260) AE.warn("Caminho com mais de 259 caracteres (limite do Windows): mova o projeto para uma pasta mais curta");
         f = AE.silent ? null : File.openDialog("Localize o arquivo: " + rel);
         if (!f) { AE.warn("Arquivo nao encontrado: " + rel); return null; }
     }
@@ -54,16 +55,66 @@ AE.importFile = function (rel, folder) {
     return item;
 };
 
-AE.marker = function (comp, t, label) {
-    comp.markerProperty.setValueAtTime(AE.t(t), new MarkerValue(label || ""));
+// Marcador geral na comp (use para cenas). evt = nome do acontecimento (pinta o marcador).
+AE.marker = function (comp, t, label, evt) {
+    var m = new MarkerValue(label || "");
+    if (evt) { try { m.label = AE.evt(evt); } catch (e) {} }
+    comp.markerProperty.setValueAtTime(AE.t(t), m);
+};
+
+// ---------------------------------------------------------------- acontecimentos e cores
+// Cada acontecimento (cena, clique, entrada de um grupo...) ganha uma cor de label.
+// Registre os acontecimentos em ordem de tempo com AE.events([...]): vizinhos nunca repetem cor.
+// Cores reservadas (fora da rotacao): controladores, fundo, audio/locucao e guia.
+AE.LABEL = { ctrl: 1, bg: 15, audio: 9, guia: 12 };  // Vermelho, Arenito, Verde, Marrom
+AE.EVT_ROT = [2, 8, 6, 3, 13, 7, 11, 5, 14, 4, 10, 16]; // ordem com bom contraste entre vizinhos
+AE._evts = {};
+AE._evtN = 0;
+AE.evt = function (name) {
+    if (AE._evts[name] == null) { AE._evts[name] = AE.EVT_ROT[AE._evtN % AE.EVT_ROT.length]; AE._evtN++; }
+    return AE._evts[name];
+};
+AE.events = function (names) { for (var i = 0; i < names.length; i++) AE.evt(names[i]); };
+
+// Metadados da camada guardados no comentario ("jsx-after|chave=valor|...").
+AE._meta = function (l, key, val) {
+    var c = String(l.comment || ""), parts = c.substr(0, 9) === "jsx-after" ? c.split("|") : ["jsx-after"], i;
+    for (i = 1; i < parts.length; i++) {
+        var kv = parts[i].split("=");
+        if (kv[0] === key) { if (val === undefined) return kv[1]; parts[i] = key + "=" + val; l.comment = parts.join("|"); return val; }
+    }
+    if (val === undefined) return null;
+    parts.push(key + "=" + val);
+    l.comment = parts.join("|");
+    return val;
+};
+
+AE.PREFIX = { ctrl: "CTRL_", bg: "BG_", matte: "MATTE_", guia: "GUIA_", audio: "AUDIO_" };
+AE._prefix = function (name, role) {
+    var p = AE.PREFIX[role];
+    return (p && String(name).substr(0, p.length) !== p) ? p + name : name;
+};
+
+// Muda o inicio da camada sem mexer no fim. (No After, mudar o inPoint empurra o outPoint junto;
+// as keyframes nao se movem.) Sempre ajuste o inicio antes do fim.
+AE._setIn = function (l, a) {
+    var o = l.outPoint;
+    l.inPoint = a;
+    l.outPoint = Math.max(o, a + l.containingComp.frameDuration);
 };
 
 // ---------------------------------------------------------------- camadas
-// Comum a todas: name, label (0-16), inT/outT (segundos), opacity, rotation, scale(%)
+// Comum a todas: name, evt (acontecimento -> cor), role ("bg"|"matte"|"guia"|"audio"),
+// keep (nao cortar), persist (nao dividir: logo, UI fixa), label (0-16, manual),
+// inT/outT (segundos), opacity, rotation, scale(%)
 AE.place = function (l, o) {
-    if (o.name) l.name = o.name;
+    if (o.name) l.name = AE._prefix(o.name, o.role);
+    if (o.evt) { l.label = AE.evt(o.evt); AE._meta(l, "evt", o.evt); }
+    if (o.role) { AE._meta(l, "role", o.role); if (AE.LABEL[o.role]) l.label = AE.LABEL[o.role]; }
     if (o.label != null) l.label = o.label;
-    if (o.inT != null) l.inPoint = AE.t(o.inT);
+    if (o.keep) AE._meta(l, "keep", 1);
+    if (o.persist) AE._meta(l, "persist", 1);
+    if (o.inT != null) AE._setIn(l, AE.t(o.inT));
     if (o.outT != null) l.outPoint = AE.t(o.outT);
     if (o.opacity != null) l.transform.opacity.setValue(o.opacity);
     if (o.rotation != null) l.transform.rotation.setValue(o.rotation);
@@ -234,10 +285,21 @@ AE.scene = function (main, o) { // o = {name, start, dur, folder, bg}
 };
 
 // Track matte (clip-path, mascara de revelacao). type: "alpha"|"alphaInv"|"luma"
+// O matte recebe prefixo MATTE_, a cor do acontecimento da camada, fica em shy e
+// passa a existir so enquanto a camada que ele recorta existe (AE.autoTrim).
+AE._matteN = 0;
 AE.matte = function (layer, matteLayer, type) {
     var tt = type === "alphaInv" ? TrackMatteType.ALPHA_INVERTED : (type === "luma" ? TrackMatteType.LUMA : TrackMatteType.ALPHA);
     try { layer.setTrackMatte(matteLayer, tt); }
     catch (e) { matteLayer.moveBefore(layer); layer.trackMatteType = tt; }
+    var id = "m" + (++AE._matteN);
+    matteLayer.name = AE._prefix(matteLayer.name, "matte");
+    matteLayer.label = layer.label;
+    AE._meta(matteLayer, "role", "matte");
+    AE._meta(matteLayer, "matteOf", id);
+    AE._meta(layer, "matteId", id);
+    if (type === "alphaInv") AE._meta(layer, "matteInv", 1);
+    matteLayer.shy = true;
 };
 
 // ---------------------------------------------------------------- efeitos
@@ -529,13 +591,363 @@ AE.textReveal = function (l, o) {
     sel.property("ADBE Text Percent Start").setValue(0);
     sel.property("ADBE Text Percent End").setValue(W);
     AE.tween(sel.property("ADBE Text Percent Offset"), -W, 100, o.start || 0, (100 + W) * each / W, "none");
+    if (l.inPoint < AE.t(o.start || 0)) AE._setIn(l, AE.t(o.start || 0)); // antes da revelacao o texto e invisivel
     return l;
 };
 
-// ---------------------------------------------------------------- final
+// ---------------------------------------------------------------- utilidades de propriedades
+AE._eachProp = function (g, fn) {
+    for (var i = 1; i <= g.numProperties; i++) {
+        var p;
+        try { p = g.property(i); } catch (e) { continue; }
+        if (!p) continue;
+        if (p.propertyType === PropertyType.PROPERTY) fn(p); else AE._eachProp(p, fn);
+    }
+};
+AE._hasExpr = function (l) {
+    var found = false;
+    AE._eachProp(l, function (p) { try { if (p.expressionEnabled && p.expression !== "") found = true; } catch (e) {} });
+    return found;
+};
+AE._lit = function (v) { // valor -> texto de expressao
+    if (v instanceof Array) { var s = [], i; for (i = 0; i < v.length; i++) s.push(Math.round(v[i] * 10000) / 10000); return "[" + s.join(", ") + "]"; }
+    return String(Math.round(v * 10000) / 10000);
+};
+AE._same = function (a, b) {
+    a = AE._arr(a); b = AE._arr(b);
+    for (var i = 0; i < Math.min(a.length, b.length); i++) if (Math.abs(a[i] - b[i]) > 1e-4) return false;
+    return true;
+};
+// Pose de repouso: o valor que fica parado por mais tempo (antes, entre ou depois das keys).
+AE._rest = function (l, p) {
+    var best = p.keyValue(p.numKeys), bestD = l.outPoint - p.keyTime(p.numKeys), k;
+    if (p.keyTime(1) - l.inPoint > bestD) { best = p.keyValue(1); bestD = p.keyTime(1) - l.inPoint; }
+    for (k = 1; k < p.numKeys; k++) {
+        if (AE._same(p.keyValue(k), p.keyValue(k + 1)) && p.keyTime(k + 1) - p.keyTime(k) > bestD) {
+            best = p.keyValue(k); bestD = p.keyTime(k + 1) - p.keyTime(k);
+        }
+    }
+    return best;
+};
+
+// ---------------------------------------------------------------- controladores
+AE._fxCtrl = function (l, mn, name, v) {
+    var e = l.property("ADBE Effect Parade").addProperty(mn);
+    e.name = name;
+    if (v != null) l.property("ADBE Effect Parade").property(name).property(1).setValue(v);
+};
+
+// Controlador de grupo (estilo Duik, nativo). o = {name, x, y (pivo do grupo),
+//   atraso (stagger original em s, so se o grupo tem stagger), cor ("#hex", so se o grupo tem cor unica)}
+// Cria CTRL_<name>: mover/escalar/girar o null move o grupo; efeitos Intensidade, Opacidade, Ligado (+ Atraso, Cor).
+AE.ctrl = function (comp, o) {
+    var l = comp.layers.addNull();
+    l.name = AE._prefix(o.name, "ctrl");
+    l.label = AE.LABEL.ctrl;
+    AE._meta(l, "role", "ctrl");
+    l.transform.position.setValue([o.x != null ? o.x : comp.width / 2, o.y != null ? o.y : comp.height / 2]);
+    if (o.atraso != null) { AE._fxCtrl(l, "ADBE Slider Control", "Atraso", o.atraso); AE._meta(l, "atraso0", o.atraso); }
+    AE._fxCtrl(l, "ADBE Slider Control", "Intensidade", 100);
+    AE._fxCtrl(l, "ADBE Slider Control", "Opacidade", 100);
+    AE._fxCtrl(l, "ADBE Checkbox Control", "Ligado", 1);
+    if (o.cor) { AE._fxCtrl(l, "ADBE Color Control", "Cor", AE.col(o.cor)); AE._meta(l, "cor", o.cor); }
+    return l;
+};
+
+// Liga uma camada ao controlador. Com os controles no padrao a animacao fica identica ao original:
+// Intensidade escala o movimento em torno da pose de repouso; Atraso muda o espacamento do stagger
+// (index = posicao da camada no stagger, 0..n-1); Opacidade e Ligado multiplicam a opacidade.
+AE.bind = function (layer, ctrl, o) {
+    o = o || {};
+    if (!layer.parent) layer.parent = ctrl;
+    var mtl = AE._matteOf(layer.containingComp, layer);
+    if (mtl && !mtl.parent) mtl.parent = ctrl; // o matte acompanha a camada
+    var ref = 'thisComp.layer("' + ctrl.name + '")';
+    var a0 = AE._meta(ctrl, "atraso0"), idx = o.index || 0;
+    var head = "var c = " + ref + ";\nvar k = c.effect(\"Intensidade\")(1) / 100;\n" +
+        (a0 != null && idx ? "var t = time - " + idx + " * (c.effect(\"Atraso\")(1) - " + a0 + ");\n" : "var t = time;\n");
+    var tr = layer.property("ADBE Transform Group");
+    var sep = tr.property("ADBE Position").dimensionsSeparated;
+    var names = sep ? ["ADBE Position_0", "ADBE Position_1"] : ["ADBE Position"];
+    names = names.concat(["ADBE Scale", "ADBE Rotate Z", "ADBE Opacity"]);
+    for (var i = 0; i < names.length; i++) {
+        var p = tr.property(names[i]);
+        if (!p || !p.canSetExpression) continue;
+        var isOp = names[i] === "ADBE Opacity", body;
+        if (p.numKeys > 1) {
+            var r = AE._lit(AE._rest(layer, p));
+            body = head + "var v = valueAtTime(t);\nvar r = " + r + ";\n" +
+                ((p.value instanceof Array) ? "var out = add(r, mul(sub(v, r), k));\n" : "var out = r + (v - r) * k;\n");
+        } else if (isOp) {
+            body = "var c = " + ref + ";\nvar out = value;\n";
+        } else continue;
+        body += isOp ? "out * c.effect(\"Opacidade\")(1) / 100 * c.effect(\"Ligado\")(1);" : "out;";
+        p.expression = body;
+    }
+    if (AE._meta(ctrl, "cor")) AE._linkColor(layer, AE.hex(AE._meta(ctrl, "cor")), ref + ".effect(\"Cor\")(1)");
+    AE._meta(layer, "bound", ctrl.name);
+    return layer;
+};
+
+// Liga preenchimentos/tracos (formas) e cores de efeitos iguais a 'rgb' a uma expressao de cor.
+AE._linkColor = function (layer, rgb, expr) {
+    var n = 0;
+    AE._eachProp(layer, function (p) {
+        try {
+            if (p.propertyValueType !== PropertyValueType.COLOR || p.numKeys > 0 || p.expression !== "") return;
+            if (AE._same(p.value, rgb)) { p.expression = expr; n++; }
+        } catch (e) {}
+    });
+    return n;
+};
+
+// CTRL_GERAL: controla a peca toda. o = {cores: {"Primaria": "#2A2AFF", ...}}
+AE.ctrlGeral = function (comp, o) {
+    o = o || {};
+    var l = comp.layers.addNull();
+    l.name = "CTRL_GERAL";
+    l.label = AE.LABEL.ctrl;
+    AE._meta(l, "role", "ctrl");
+    l.transform.position.setValue([comp.width / 2, comp.height / 2]);
+    AE._brand = [];
+    if (o.cores) for (var k in o.cores) {
+        if (!o.cores.hasOwnProperty(k)) continue;
+        AE._fxCtrl(l, "ADBE Color Control", k, AE.col(o.cores[k]));
+        AE._brand.push({ name: k, rgb: AE.hex(o.cores[k]) });
+    }
+    return l;
+};
+// Liga as cores da marca ao CTRL_GERAL e, na comp dele, torna as camadas soltas filhas dele
+// (mover/escalar o GERAL mexe na peca toda). Fundo, guia, audio e controladores ficam de fora do parent.
+// Chame no fim, para cada comp (principal e precomps). mainComp = comp onde esta o CTRL_GERAL.
+AE.linkGeral = function (comp, geral, mainComp) {
+    var same = comp.id === mainComp.id, i, j;
+    var ref = (same ? "thisComp" : 'comp("' + mainComp.name + '")') + '.layer("CTRL_GERAL")';
+    for (i = 1; i <= comp.numLayers; i++) {
+        var l = comp.layer(i), role = AE._meta(l, "role");
+        if (same && l.index !== geral.index && !l.parent && role !== "bg" && role !== "guia" && role !== "audio" && !l.isTrackMatte) {
+            if (!(role === "ctrl" && l.name === "CTRL_GERAL")) l.parent = geral;
+        }
+        for (j = 0; j < (AE._brand || []).length; j++) AE._linkColor(l, AE._brand[j].rgb, ref + '.effect("' + AE._brand[j].name + '")(1)');
+    }
+    for (i = 1; i <= comp.numLayers; i++) { // mattes acompanham o pai da camada que recortam
+        var m = comp.layer(i), of = AE._meta(m, "matteOf");
+        if (of == null || m.parent) continue;
+        for (j = 1; j <= comp.numLayers; j++) {
+            var u = comp.layer(j);
+            if (AE._meta(u, "matteId") === of && u.parent) m.parent = u.parent;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- essential properties
+// Expoe uma propriedade da comp nas Essential Properties (aparece na camada da precomp na comp de cima).
+AE.expose = function (prop, comp, name) {
+    try { if (prop.canAddToMotionGraphicsTemplate(comp)) { prop.addToMotionGraphicsTemplateAs(comp, name); return true; } } catch (e) {}
+    AE.warn("Nao foi possivel expor nas Essential Properties: " + name);
+    return false;
+};
+AE.exposeText = function (textLayer, comp, name) {
+    return AE.expose(textLayer.property("ADBE Text Properties").property("ADBE Text Document"), comp, name || textLayer.name);
+};
+AE.exposeCtrl = function (ctrl, comp) {
+    var fx = ctrl.property("ADBE Effect Parade"), base = ctrl.name.replace("CTRL_", "");
+    for (var i = 1; i <= fx.numProperties; i++) AE.expose(fx.property(i).property(1), comp, base + " " + fx.property(i).name);
+};
+
+// ---------------------------------------------------------------- guia e locucao
+AE._lockAtEnd = [];
+// Render original como camada guia: nao renderiza, sem audio, opacidade baixa, travada no fim.
+AE.guide = function (comp, item, o) {
+    if (!item) return null;
+    o = o || {};
+    var l = comp.layers.add(item);
+    var s = Math.min(comp.width / item.width, comp.height / item.height) * 100;
+    AE._box(l, { x: 0, y: 0, w: comp.width, h: comp.height }, item.width, item.height, s, s);
+    l.name = "GUIA_original";
+    l.label = AE.LABEL.guia;
+    AE._meta(l, "role", "guia");
+    l.guideLayer = true;
+    l.transform.opacity.setValue(o.opacity || 30);
+    if (l.hasAudio) l.audioEnabled = false;
+    l.moveToBeginning();
+    AE._lockAtEnd.push(l);
+    return l;
+};
+
+// Locucao com um marcador no inicio exato de cada frase. frases = [{t: segundos no audio, text: "..."}]
+// (tempos vindos do projeto ou de scripts/frases_locucao.mjs). o = {name, start (s na comp)}
+AE.voice = function (comp, item, frases, o) {
+    if (!item) return null;
+    o = o || {};
+    var l = comp.layers.add(item), st = o.start || 0, i;
+    l.name = AE._prefix(o.name || "Locucao", "audio");
+    l.label = AE.LABEL.audio;
+    AE._meta(l, "role", "audio");
+    l.startTime = AE.t(st);
+    AE.phraseMarkers(l, frases, st);
+    l.moveToEnd();
+    return l;
+};
+// Marcadores de frase numa camada que ja existe (ex.: o video no Modo Video, com a fala embutida).
+AE.phraseMarkers = function (l, frases, st) {
+    var fps = l.containingComp.frameRate;
+    st = st || 0;
+    for (var i = 0; i < frases.length; i++) {
+        var t = Math.floor((st + frases[i].t) * fps + 0.01) / fps; // nunca depois do inicio da fala
+        l.property("ADBE Marker").setValueAtTime(t, new MarkerValue(frases[i].text));
+    }
+};
+
+// ---------------------------------------------------------------- corte das camadas
+AE._posAt = function (tr, t) {
+    if (tr.property("ADBE Position").dimensionsSeparated)
+        return [tr.property("ADBE Position_0").valueAtTime(t, false), tr.property("ADBE Position_1").valueAtTime(t, false)];
+    return tr.property("ADBE Position").valueAtTime(t, false);
+};
+AE._visAt = function (comp, l, t, offscreen) {
+    var tr = l.property("ADBE Transform Group");
+    if (tr.property("ADBE Opacity").valueAtTime(t, false) <= 0.05) return false;
+    var s = tr.property("ADBE Scale").valueAtTime(t, false);
+    if (Math.abs(s[0]) < 0.05 || Math.abs(s[1]) < 0.05) return false;
+    if (offscreen && !l.parent) {
+        var r = l.sourceRectAtTime(t, false);
+        if (r.width <= 0 || r.height <= 0) return false;
+        var a = tr.property("ADBE Anchor Point").valueAtTime(t, false), p = AE._posAt(tr, t);
+        var rot = tr.property("ADBE Rotate Z").valueAtTime(t, false) * Math.PI / 180, cs = Math.cos(rot), sn = Math.sin(rot);
+        var xs = [r.left, r.left + r.width], ys = [r.top, r.top + r.height], x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, i, j;
+        for (i = 0; i < 2; i++) for (j = 0; j < 2; j++) {
+            var dx = (xs[i] - a[0]) * s[0] / 100, dy = (ys[j] - a[1]) * s[1] / 100;
+            var X = p[0] + dx * cs - dy * sn, Y = p[1] + dx * sn + dy * cs;
+            x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+        }
+        if (x1 < 0 || x0 > comp.width || y1 < 0 || y0 > comp.height) return false;
+    }
+    return true;
+};
+AE._matteOf = function (comp, l) {
+    var id = AE._meta(l, "matteId");
+    if (id == null) return null;
+    for (var i = 1; i <= comp.numLayers; i++) if (AE._meta(comp.layer(i), "matteOf") === id) return comp.layer(i);
+    return null;
+};
+// Trechos (em s) em que a camada aparece, quadro a quadro.
+AE._runs = function (comp, l, mt, inv) {
+    var fd = comp.frameDuration, runs = [], cur = null, n;
+    var off = AE._meta(l, "role") !== "bg";
+    var n0 = Math.round(l.inPoint / fd), n1 = Math.round(l.outPoint / fd);
+    for (n = n0; n < n1; n++) {
+        var t = n * fd;
+        var v = AE._visAt(comp, l, t, off) && (!mt || inv || AE._visAt(comp, mt, t, false));
+        if (v) { if (!cur) cur = [t, t + fd]; else cur[1] = t + fd; }
+        else if (cur) { runs.push(cur); cur = null; }
+    }
+    if (cur) runs.push(cur);
+    return runs;
+};
+// Remove keys que ficaram inteiras fora da camada (mantem as que definem o valor nas bordas).
+AE._trimKeys = function (l) {
+    var a = l.inPoint, b = l.outPoint;
+    AE._eachProp(l, function (p) {
+        try {
+            if (p.matchName === "ADBE Marker" || p.numKeys < 2) return;
+            var k;
+            for (k = p.numKeys; k >= 2; k--) if (p.keyTime(k) > b && p.keyTime(k - 1) >= b) p.removeKey(k);
+            for (k = p.numKeys - 1; k >= 1; k--) if (p.keyTime(k) < a && p.keyTime(k + 1) <= a) p.removeKey(k);
+        } catch (e) {}
+    });
+};
+
+AE._stats = { cuts: 0, splits: 0 };
+// Corta cada camada para existir so onde aparece na tela e divide em camadas separadas quando ela
+// some e volta depois de o.gap segundos (padrao 1). Nao divide (so corta as pontas): persist,
+// fundo, camada com expressao, ligada a controlador ou com matte. Nao toca: keep, nulls,
+// controladores, guia, audio, ajuste. Os mattes seguem a camada que recortam.
+// Rode depois de criar tudo e ANTES de AE.bind/AE.linkGeral (sem expressoes as keys sao podadas).
+AE.autoTrim = function (comp, o) {
+    o = o || {};
+    var gap = o.gap != null ? o.gap : 1, i, j, list = [];
+    for (i = 1; i <= comp.numLayers; i++) list.push(comp.layer(i));
+    for (i = 0; i < list.length; i++) {
+        var l = list[i], role = AE._meta(l, "role");
+        if (l instanceof CameraLayer || l instanceof LightLayer || l.nullLayer || l.adjustmentLayer || l.guideLayer || !l.hasVideo) continue;
+        if (role === "ctrl" || role === "guia" || role === "audio" || role === "matte" || AE._meta(l, "keep") || l.isTrackMatte) continue;
+        var mt = AE._matteOf(comp, l), inv = AE._meta(l, "matteInv") ? true : false;
+        var runs = AE._runs(comp, l, mt, inv);
+        if (!runs.length) { AE.warn("Camada nunca aparece: " + l.name + " (" + comp.name + ")"); continue; }
+        var hasExpr = AE._hasExpr(l);
+        var noSplit = AE._meta(l, "persist") || AE._meta(l, "bound") || mt || hasExpr || role === "bg";
+        var merged = [runs[0]];
+        for (j = 1; j < runs.length; j++) {
+            var last = merged[merged.length - 1];
+            if (noSplit || runs[j][0] - last[1] < gap) last[1] = runs[j][1]; else merged.push(runs[j]);
+        }
+        var base = l.name;
+        for (j = merged.length - 1; j >= 1; j--) {
+            var d = l.duplicate();
+            d.name = base + " #" + (j + 1);
+            d.inPoint = merged[j][0];
+            d.outPoint = merged[j][1];
+            if (!hasExpr) AE._trimKeys(d);
+            AE._stats.splits++;
+        }
+        if (merged[0][0] > l.inPoint + 1e-6 || merged[0][1] < l.outPoint - 1e-6) AE._stats.cuts++;
+        l.inPoint = merged[0][0];
+        l.outPoint = merged[0][1];
+        if (!hasExpr) AE._trimKeys(l);
+    }
+    for (i = 1; i <= comp.numLayers; i++) { // mattes acompanham a camada que recortam
+        var m = comp.layer(i), of = AE._meta(m, "matteOf");
+        if (of == null) continue;
+        for (j = 1; j <= comp.numLayers; j++) {
+            var u = comp.layer(j);
+            if (AE._meta(u, "matteId") === of) { m.inPoint = u.inPoint; m.outPoint = u.outPoint; AE._trimKeys(m); }
+        }
+    }
+};
+
+// ---------------------------------------------------------------- inicio e fim
+// AE.begin() no comeco: anota o que ja existia no projeto (a limpeza nunca toca nisso).
+AE.begin = function () {
+    AE._pre = {};
+    for (var i = 1; i <= app.project.numItems; i++) AE._pre[app.project.item(i).id] = true;
+};
+// AE.finish(root, [comps]) no fim: remove so itens criados pelo script e nao usados, guarda os
+// solidos na pasta raiz, esconde camadas shy, trava as guias e monta o resumo.
+AE.finish = function (root, comps) {
+    var removed = 0, i, it, created = [];
+    if (AE._pre) {
+        for (i = 1; i <= app.project.numItems; i++) { it = app.project.item(i); if (!AE._pre[it.id]) created.push(it); }
+        for (i = 0; i < created.length; i++) {
+            it = created[i];
+            if (!(it instanceof FootageItem)) continue;
+            if (it.usedIn.length === 0) { it.remove(); removed++; }
+            else if (root && it.mainSource instanceof SolidSource) {
+                if (!AE._solidsF) AE._solidsF = AE.folder("Solidos", root);
+                it.parentFolder = AE._solidsF;
+            }
+        }
+        for (i = app.project.numItems; i >= 1; i--) {
+            it = app.project.item(i);
+            if (!AE._pre[it.id] && it instanceof FolderItem && it.numItems === 0) { it.remove(); removed++; }
+        }
+    }
+    var nl = 0, nc = 0, j;
+    comps = comps || [];
+    for (i = 0; i < comps.length; i++) {
+        comps[i].hideShyLayers = true;
+        nl += comps[i].numLayers;
+        for (j = 1; j <= comps[i].numLayers; j++) if (AE._meta(comps[i].layer(j), "role") === "ctrl") nc++;
+    }
+    for (i = 0; i < AE._lockAtEnd.length; i++) AE._lockAtEnd[i].locked = true;
+    AE._summary = "Camadas: " + nl + " | cortadas: " + AE._stats.cuts + " | divididas: " + AE._stats.splits +
+        " | controladores: " + nc + " | acontecimentos: " + AE._evtN + " | itens limpos: " + removed;
+};
+
 AE.report = function (title) {
     if (AE.silent) return;
     var msg = title + " pronto.";
+    if (AE._summary) msg += "\n" + AE._summary;
     if (AE.warnings.length) msg += "\n\nAvisos:\n- " + AE.warnings.join("\n- ");
     alert(msg);
 };

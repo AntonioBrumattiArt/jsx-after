@@ -76,7 +76,7 @@ Calcule o tempo absoluto de cada tween antes de escrever o JSX:
 | gradiente (`linear-gradient`) | `AE.solid` + efeito `ADBE Ramp` | |
 | fundo de cor da cena | `bg` da comp | não crie um sólido só para isso |
 | `overflow: hidden` / `clip-path` | `AE.matte` com um `AE.rect` do tamanho do recorte | |
-| grupo que se move junto (`div` pai animado) | `n = AE.nullL(...)` + `filho.parent = n` | só quando o pai tem animação própria |
+| grupo que se move junto (`div` pai animado) | `c = AE.ctrl(...)` + `AE.bind(filho, c)` | as regras estão em `organizacao.md` §3 |
 
 ## 5. Efeitos (matchNames)
 
